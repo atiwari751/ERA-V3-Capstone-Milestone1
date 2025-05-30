@@ -27,7 +27,7 @@ async def main(user_input: str):
         server_params = StdioServerParameters(
             command="python",
             args=["mcp-server.py"],
-            cwd="C:\\Users\\51118\\Documents\\ERA V3\\S7"
+            cwd="./."
         )
 
         try:

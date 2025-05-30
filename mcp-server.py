@@ -14,6 +14,8 @@ import requests
 from markitdown import MarkItDown
 import time
 from models import AddInput, AddOutput, SqrtInput, SqrtOutput, StringsToIntsInput, StringsToIntsOutput, ExpSumInput, ExpSumOutput
+from models import ( Search2050ProductsInput, Search2050ProductsOutput, ProductInfo,
+    Get2050ProductDetailsInput, Get2050ProductDetailsOutput, MaterialFacts )
 from PIL import Image as PILImage
 from tqdm import tqdm
 import hashlib
@@ -26,6 +28,156 @@ EMBED_MODEL = "nomic-embed-text"
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 0
 ROOT = Path(__file__).parent.resolve()
+
+# --- BEGIN 2050 Materials API Integration ---
+TOKEN_CACHE_FILE = ROOT / '2050_token_cache.json' # Store cache in server's directory
+BASE_API_URL = "https://app.2050-materials.com/"
+TOKEN_URL = f"{BASE_API_URL}developer/api/token/getapitoken/"
+# IMPORTANT: Ensure DEVELOPER_TOKEN is set as an environment variable where mcp-server.py runs
+DEVELOPER_TOKEN = os.getenv("DEVELOPER_TOKEN")
+
+def mcp_log(level: str, message: str) -> None:
+    """Log a message to stderr to avoid interfering with JSON communication"""
+    sys.stderr.write(f"{level.upper()}: {message}\n")
+    sys.stderr.flush()
+
+def load_cached_token():
+    if TOKEN_CACHE_FILE.exists():
+        with open(TOKEN_CACHE_FILE, 'r') as f:
+            try:
+                token_data = json.load(f)
+                if token_data.get("expires_at", 0) > time.time():
+                    mcp_log("info", "Using cached 2050 API token.")
+                    return token_data.get("api_token")
+            except json.JSONDecodeError:
+                mcp_log("warn", "Could not decode token cache file.")
+                return None
+    mcp_log("info", "No valid cached 2050 API token found.")
+    return None
+
+def save_token_to_cache(api_token, expires_in=3600):
+    token_data = {
+        "api_token": api_token,
+        "expires_at": time.time() + expires_in - 60  # buffer of 60 seconds
+    }
+    with open(TOKEN_CACHE_FILE, 'w') as f:
+        json.dump(token_data, f)
+    mcp_log("info", "Saved new 2050 API token to cache.")
+
+def get_2050_api_token():
+    if not DEVELOPER_TOKEN:
+        mcp_log("error", "DEVELOPER_TOKEN environment variable is not set.")
+        raise ValueError("DEVELOPER_TOKEN is not set.")
+
+    cached_token = load_cached_token()
+    if cached_token:
+        return cached_token
+
+    headers = {'Authorization': f'Bearer {DEVELOPER_TOKEN}'}
+    try:
+        mcp_log("info", f"Requesting new 2050 API token from {TOKEN_URL}")
+        response = requests.get(TOKEN_URL, headers=headers)
+        response.raise_for_status()
+        tokens = response.json()
+        api_token = tokens["api_token"]
+        save_token_to_cache(api_token)
+        return api_token
+    except requests.RequestException as e:
+        mcp_log("error", f"Failed to fetch 2050 API token: {e}")
+        raise Exception(f"Failed to fetch 2050 API token: {e}")
+    except KeyError:
+        mcp_log("error", "Invalid response format from token API.")
+        raise Exception("Invalid response format from 2050 token API.")
+
+@mcp.tool()
+def search_2050_products(input: Search2050ProductsInput) -> Search2050ProductsOutput:
+    """Search for products on the 2050 Materials platform by product name."""
+    mcp_log("tool_call", f"search_2050_products with name: {input.product_name}")
+    try:
+        api_token = get_2050_api_token()
+        headers = {
+            'Authorization': f'Bearer {api_token}',
+            'Content-Type': 'application/json',
+        }
+        search_url = f"{BASE_API_URL}developer/api/get_products_open_api"
+        params = {"name": input.product_name}
+
+        response = requests.get(search_url, headers=headers, params=params)
+        response.raise_for_status()
+        data = response.json()
+        
+        api_products = data.get("products", data.get("results", []))
+        output_products = []
+        if api_products:
+            for p in api_products:
+                output_products.append(ProductInfo(
+                    unique_product_uuid_v2=p.get("unique_product_uuid_v2"),
+                    name=p.get("name"),
+                    raw_data=p
+                ))
+            mcp_log("tool_result", f"Found {len(output_products)} product(s).")
+            return Search2050ProductsOutput(products=output_products, message=f"Found {len(output_products)} product(s).")
+        else:
+            mcp_log("tool_result", "No matching products found.")
+            return Search2050ProductsOutput(products=[], message="No matching products found.")
+
+    except ValueError as ve: # Catch DEVELOPER_TOKEN not set
+        mcp_log("error", f"Configuration error in search_2050_products: {ve}")
+        return Search2050ProductsOutput(products=[], message=str(ve))
+    except requests.RequestException as e:
+        mcp_log("error", f"API request failed in search_2050_products: {e}")
+        return Search2050ProductsOutput(products=[], message=f"API request failed: {e}")
+    except Exception as e:
+        mcp_log("error", f"Unexpected error in search_2050_products: {e}")
+        return Search2050ProductsOutput(products=[], message=f"An unexpected error occurred: {e}")
+
+@mcp.tool()
+def get_2050_product_details_by_slug(input: Get2050ProductDetailsInput) -> Get2050ProductDetailsOutput:
+    """Get material facts for a product from the 2050 Materials platform using its slug ID."""
+    mcp_log("tool_call", f"get_2050_product_details_by_slug with slug_id: {input.slug_id}")
+    try:
+        api_token = get_2050_api_token()
+        headers = {
+            'Authorization': f'Bearer {api_token}',
+            'Content-Type': 'application/json',
+        }
+        url = f"{BASE_API_URL}api/get_product_slug?slug_id={input.slug_id}"
+
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+        if "product" in data and "material_facts" in data["product"]:
+            mf_data = data["product"]["material_facts"]
+            material_facts = MaterialFacts(
+                total_co2e_kg_mf=mf_data.get("total_co2e_kg_mf"),
+                total_biogenic_co2e=mf_data.get("total_biogenic_co2e"),
+                raw_data=mf_data
+            )
+            mcp_log("tool_result", f"Fetched details for slug: {input.slug_id}")
+            return Get2050ProductDetailsOutput(
+                product_slug_id=input.slug_id,
+                material_facts=material_facts,
+                message="Successfully fetched product details."
+            )
+        else:
+            mcp_log("warn", f"Product or material_facts not found in response for slug: {input.slug_id}")
+            return Get2050ProductDetailsOutput(product_slug_id=input.slug_id, message="Product or material_facts not found in API response.")
+
+    except ValueError as ve: # Catch DEVELOPER_TOKEN not set
+        mcp_log("error", f"Configuration error in get_2050_product_details_by_slug: {ve}")
+        return Get2050ProductDetailsOutput(message=str(ve))
+    except requests.RequestException as e:
+        mcp_log("error", f"API request failed in get_2050_product_details_by_slug: {e}")
+        return Get2050ProductDetailsOutput(message=f"API request failed: {e}")
+    except KeyError as e:
+        mcp_log("error", f"Missing expected data for slug {input.slug_id}: {e}")
+        return Get2050ProductDetailsOutput(message=f"Missing expected data in API response: {e}")
+    except Exception as e:
+        mcp_log("error", f"Unexpected error in get_2050_product_details_by_slug: {e}")
+        return Get2050ProductDetailsOutput(message=f"An unexpected error occurred: {e}")
+
+# --- END 2050 Materials API Integration ---
 
 def get_embedding(text: str) -> np.ndarray:
     response = requests.post(EMBED_URL, json={"model": EMBED_MODEL, "prompt": text})

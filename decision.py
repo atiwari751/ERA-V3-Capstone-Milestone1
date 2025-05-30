@@ -36,6 +36,8 @@ Always follow this loop:
 1. Think step-by-step about the problem.
 2. If a tool is needed, respond using the format:
    FUNCTION_CALL: tool_name|param1=value1|param2=value2
+   For tools that take a complex input object (e.g., named 'input'), use dot notation for nested parameters:
+   FUNCTION_CALL: tool_name|input.nested_param1=valueA|input.nested_param2=valueB
 3. When the final answer is known, respond using:
    FINAL_ANSWER: [your final result]
 
@@ -56,6 +58,8 @@ Input Summary:
 - FUNCTION_CALL: add|a=5|b=3
 - FUNCTION_CALL: strings_to_chars_to_int|input.string=INDIA
 - FUNCTION_CALL: int_list_to_exponential_sum|input.int_list=[73,78,68,73,65]
+- FUNCTION_CALL: search_2050_products|input.product_name=Recycled Steel S235
+- FUNCTION_CALL: get_2050_product_details_by_slug|input.slug_id=some-product-slug-v2
 - FINAL_ANSWER: [42]
 
 ✅ Examples:
