@@ -12,6 +12,8 @@ from mcp.client.stdio import stdio_client
 
 import shutil
 import sys
+from dotenv import load_dotenv
+import subprocess
 
 def log(stage: str, msg: str):
     now = datetime.datetime.now().strftime("%H:%M:%S")
@@ -19,15 +21,35 @@ def log(stage: str, msg: str):
 
 max_steps = 3
 
+# Load environment variables from .env
+load_dotenv()
+
 async def main(user_input: str):
     try:
         print("[agent] Starting agent...")
         print(f"[agent] Current working directory: {os.getcwd()}")
-        
+        '''
+        # Start a simple test of the MCP server before trying to connect to it
+        print("[agent] Testing MCP server availability...")
+        try:
+            test_result = subprocess.run(
+                ["python", "mcp-server.py", "test"], 
+                capture_output=True, 
+                text=True, 
+                timeout=5
+            )
+            print(f"[agent] MCP server test output: {test_result.stdout}")
+            if test_result.returncode != 0:
+                print(f"[agent] MCP server test failed with error: {test_result.stderr}")
+        except Exception as e:
+            print(f"[agent] Failed to test MCP server: {e}")
+        '''
+        # Pass environment to the subprocess
         server_params = StdioServerParameters(
             command="python",
             args=["mcp-server.py"],
-            cwd="./."
+            cwd="./.",
+            env=os.environ  # Pass the environment variables to the subprocess
         )
 
         try:
@@ -99,8 +121,22 @@ async def main(user_input: str):
                                 step += 1
                         except Exception as e:
                             print(f"[agent] Session initialization error: {str(e)}")
+                            import traceback
+                            traceback.print_exc()
+                            # Check if there's a TaskGroup error we can unwrap
+                            if "TaskGroup" in str(e):
+                                print("[agent] Trying to extract TaskGroup exception details...")
+                                try:
+                                    # Access potential __context__ or __cause__ attributes to get the real error
+                                    inner_exc = getattr(e, "__context__", None) or getattr(e, "__cause__", None)
+                                    if inner_exc:
+                                        print(f"[agent] Inner exception: {type(inner_exc).__name__}: {str(inner_exc)}")
+                                except:
+                                    print("[agent] Could not extract inner exception")
                 except Exception as e:
                     print(f"[agent] Session creation error: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
         except Exception as e:
             print(f"[agent] Connection error: {str(e)}")
     except Exception as e:

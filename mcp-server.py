@@ -19,7 +19,11 @@ from models import ( Search2050ProductsInput, Search2050ProductsOutput, ProductI
 from PIL import Image as PILImage
 from tqdm import tqdm
 import hashlib
+from dotenv import load_dotenv
+import logging
+import traceback
 
+load_dotenv()  # This loads the variables from .env
 
 mcp = FastMCP("Calculator")
 
@@ -28,6 +32,17 @@ EMBED_MODEL = "nomic-embed-text"
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 0
 ROOT = Path(__file__).parent.resolve()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("mcp_server.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("mcp-server")
 
 # --- BEGIN 2050 Materials API Integration ---
 TOKEN_CACHE_FILE = ROOT / '2050_token_cache.json' # Store cache in server's directory
@@ -40,6 +55,10 @@ def mcp_log(level: str, message: str) -> None:
     """Log a message to stderr to avoid interfering with JSON communication"""
     sys.stderr.write(f"{level.upper()}: {message}\n")
     sys.stderr.flush()
+    
+    # Also log to the logger
+    log_level = getattr(logging, level.upper() if level.upper() in ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL') else 'INFO')
+    logger.log(log_level, message)
 
 def load_cached_token():
     if TOKEN_CACHE_FILE.exists():
@@ -191,7 +210,7 @@ def chunk_text(text, size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
 
 def mcp_log(level: str, message: str) -> None:
     """Log a message to stderr to avoid interfering with JSON communication"""
-    sys.stderr.write(f"{level}: {message}\n")
+    sys.stderr.write(f"{level.upper()}: {message}\n")
     sys.stderr.flush()
 
 @mcp.tool()
@@ -431,18 +450,61 @@ def ensure_faiss_ready():
     else:
         mcp_log("INFO", "Index already exists. Skipping regeneration.")
 
+# Modify the FastMCP run method to add tracing
+original_run = FastMCP.run
+def run_with_logging(self, *args, **kwargs):
+    logger.info(f"Starting MCP server with args: {args}, kwargs: {kwargs}")
+    try:
+        return original_run(self, *args, **kwargs)
+    except Exception as e:
+        logger.error(f"Error in MCP server: {e}")
+        logger.error(traceback.format_exc())
+        raise
+FastMCP.run = run_with_logging
+
+# Add logging to the embeddings function
+original_get_embedding = get_embedding
+def get_embedding_with_logging(text: str) -> np.ndarray:
+    logger.debug(f"Getting embedding for text: {text[:50]}...")
+    try:
+        result = original_get_embedding(text)
+        logger.debug(f"Successfully got embedding of shape: {result.shape}")
+        return result
+    except Exception as e:
+        logger.error(f"Error getting embedding: {e}")
+        logger.error(traceback.format_exc())
+        raise
+get_embedding = get_embedding_with_logging
 
 if __name__ == "__main__":
-    print("STARTING THE SERVER AT AMAZING LOCATION")
-
+    logger.info("STARTING THE SERVER")
     
-    
-    if len(sys.argv) > 1 and sys.argv[1] == "dev":
-        mcp.run() # Run without transport for dev server
+    if len(sys.argv) > 1 and sys.argv[1] == "test":
+        # Just print a test message and exit for quick testing
+        print("MCP server test mode: OK")
+        sys.exit(0)
+    elif len(sys.argv) > 1 and sys.argv[1] == "dev":
+        logger.info("Running in dev mode without transport")
+        try:
+            mcp.run() # Run without transport for dev server
+            logger.info("MCP server run completed normally")
+        except Exception as e:
+            logger.error(f"Error running MCP server: {e}")
+            logger.error(traceback.format_exc())
     else:
         # Start the server in a separate thread
         import threading
-        server_thread = threading.Thread(target=lambda: mcp.run(transport="stdio"))
+        logger.info("Starting server thread with stdio transport")
+        
+        def run_server():
+            try:
+                mcp.run(transport="stdio")
+                logger.info("MCP server thread completed normally")
+            except Exception as e:
+                logger.error(f"Error in MCP server thread: {e}")
+                logger.error(traceback.format_exc())
+        
+        server_thread = threading.Thread(target=run_server)
         server_thread.daemon = True
         server_thread.start()
         
@@ -450,11 +512,18 @@ if __name__ == "__main__":
         time.sleep(2)
         
         # Process documents after server is running
-        process_documents()
+        try:
+            logger.info("Starting document processing")
+            process_documents()
+            logger.info("Document processing completed")
+        except Exception as e:
+            logger.error(f"Error processing documents: {e}")
+            logger.error(traceback.format_exc())
         
         # Keep the main thread alive
         try:
+            logger.info("Main thread waiting...")
             while True:
                 time.sleep(1)
         except KeyboardInterrupt:
-            print("\nShutting down...")
+            logger.info("Received keyboard interrupt, shutting down...")
