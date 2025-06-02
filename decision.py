@@ -25,6 +25,14 @@ def generate_plan(
     """Generates a plan (tool call or final answer) using LLM based on structured perception and memory."""
 
     memory_texts = "\n".join(f"- {m.text}" for m in memory_items) or "None"
+    
+    # Extract previous math results if available
+    math_results = []
+    for mem in memory_items:
+        if mem.tool_name in ['add', 'subtract', 'multiply', 'divide']:
+            math_results.append(f"- {mem.tool_name} result: {mem.text}")
+    
+    math_context = "\n".join(math_results) if math_results else "No previous calculations."
 
     tool_context = f"\nYou have access to the following tools:\n{tool_descriptions}" if tool_descriptions else ""
 
@@ -41,10 +49,12 @@ Always follow this loop:
 3. When the final answer is known, respond using:
    FINAL_ANSWER: [your final result]
 
-Guidelines:
+Important context:
 - Respond using EXACTLY ONE of the formats above per step.
 - Do NOT include extra text, explanation, or formatting.
 - Use nested keys (e.g., input.string) and square brackets for lists.
+- You're currently on step {len(math_results) + 1} of solving this problem
+- Previous calculations: {math_context}
 - You can reference these relevant memories:
 {memory_texts}
 
@@ -53,6 +63,18 @@ Input Summary:
 - Intent: {perception.intent}
 - Entities: {', '.join(perception.entities)}
 - Tool hint: {perception.tool_hint or 'None'}
+- Current results so far: {perception.user_input.split("Previous results:")[-1] if "Previous results:" in perception.user_input else "None"}
+
+IMPORTANT INSTRUCTIONS FOR MULTI-PART QUERIES:
+1. Break down the user request into distinct operations
+2. Keep track of what information you've already retrieved
+3. DO NOT repeat searches or retrievals you've already performed - check memory first
+4. Once you have gathered ALL needed information, provide a FINAL_ANSWER that includes:
+   - Results of mathematical operations 
+   - Information retrieved from searches
+   - Any relationships or conclusions requested
+
+When you see "Retrieved information about X" or "SEARCH SUMMARY" in your memory, this means you've already searched for this information. DO NOT search for it again.
 
 ✅ Examples:
 - FUNCTION_CALL: add|a=5|b=3
@@ -63,7 +85,7 @@ Input Summary:
 - FINAL_ANSWER: [42]
 
 ✅ Examples:
-- User asks: "What’s the relationship between Cricket and Sachin Tendulkar"
+- User asks: "What's the relationship between Cricket and Sachin Tendulkar"
   - FUNCTION_CALL: search_documents|query="relationship between Cricket and Sachin Tendulkar"
   - [receives a detailed document]
   - FINAL_ANSWER: [Sachin Tendulkar is widely regarded as the "God of Cricket" due to his exceptional skills, longevity, and impact on the sport in India. He is the leading run-scorer in both Test and ODI cricket, and the first to score 100 centuries in international cricket. His influence extends beyond his statistics, as he is seen as a symbol of passion, perseverance, and a national icon. ]

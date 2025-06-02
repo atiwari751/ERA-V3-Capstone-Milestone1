@@ -28,22 +28,6 @@ async def main(user_input: str):
     try:
         print("[agent] Starting agent...")
         print(f"[agent] Current working directory: {os.getcwd()}")
-        '''
-        # Start a simple test of the MCP server before trying to connect to it
-        print("[agent] Testing MCP server availability...")
-        try:
-            test_result = subprocess.run(
-                ["python", "mcp-server.py", "test"], 
-                capture_output=True, 
-                text=True, 
-                timeout=5
-            )
-            print(f"[agent] MCP server test output: {test_result.stdout}")
-            if test_result.returncode != 0:
-                print(f"[agent] MCP server test failed with error: {test_result.stderr}")
-        except Exception as e:
-            print(f"[agent] Failed to test MCP server: {e}")
-        '''
         # Pass environment to the subprocess
         server_params = StdioServerParameters(
             command="python",
@@ -82,14 +66,21 @@ async def main(user_input: str):
                             session_id = f"session-{int(time.time())}"
                             query = user_input  # Store original intent
                             step = 0
+                            results_so_far = {}  # New: store important results
 
                             while step < max_steps:
                                 log("loop", f"Step {step + 1} started")
 
-                                perception = extract_perception(user_input)
+                                # Add accumulated results to the user input for better context
+                                context_input = user_input
+                                if results_so_far:
+                                    context_input += "\n\nPrevious results: " + ", ".join([f"{k}: {v}" for k, v in results_so_far.items()])
+                                
+                                perception = extract_perception(context_input)
                                 log("perception", f"Intent: {perception.intent}, Tool hint: {perception.tool_hint}")
 
-                                retrieved = memory.retrieve(query=user_input, top_k=3, session_filter=session_id)
+                                # Improve memory retrieval by including all previous tool outputs
+                                retrieved = memory.retrieve(query=context_input, top_k=5, session_filter=session_id)
                                 log("memory", f"Retrieved {len(retrieved)} relevant memories")
 
                                 plan = generate_plan(perception, retrieved, tool_descriptions=tool_descriptions)
@@ -103,6 +94,41 @@ async def main(user_input: str):
                                     result = await execute_tool(session, tools, plan)
                                     log("tool", f"{result.tool_name} returned: {result.result}")
 
+                                    # Store important results based on tool type
+                                    if result.tool_name in ['add', 'subtract', 'multiply', 'divide']:
+                                        results_so_far[f"math_{step}"] = result.result
+                                    elif result.tool_name == 'search_documents':
+                                        # Extract key information from search results
+                                        if isinstance(result.result, list) and result.result:
+                                            # Store search results with their query to avoid repetition
+                                            query_key = str(result.arguments).replace(" ", "_")[:30]  # Create a short key based on the query
+                                            results_so_far[f"search_{query_key}"] = f"Retrieved information about: {result.arguments}"
+                                            
+                                            # Explicitly add a summary of what was found to help the agent remember
+                                            search_summary = f"Found information about {result.arguments}"
+                                            memory.add(MemoryItem(
+                                                text=f"SEARCH SUMMARY: {search_summary}",
+                                                type="fact",
+                                                tool_name="search_summary",
+                                                user_query=user_input,
+                                                tags=["search_summary"],
+                                                session_id=session_id
+                                            ))
+                                    elif result.tool_name.startswith('search_') or result.tool_name.startswith('get_'):
+                                        # For all other search/retrieval tools, track what was retrieved
+                                        param_key = str(result.arguments).replace(" ", "_")[:30]
+                                        results_so_far[f"{result.tool_name}_{param_key}"] = f"Retrieved data about {result.arguments}"
+                                        
+                                        # Add explicit memory about this retrieval
+                                        memory.add(MemoryItem(
+                                            text=f"RETRIEVAL SUMMARY: Used {result.tool_name} to get information about {result.arguments}",
+                                            type="fact",
+                                            tool_name=result.tool_name,
+                                            user_query=user_input,
+                                            tags=["retrieval_summary"],
+                                            session_id=session_id
+                                        ))
+                                    
                                     memory.add(MemoryItem(
                                         text=f"Tool call: {result.tool_name} with {result.arguments}, got: {result.result}",
                                         type="tool_output",
@@ -112,7 +138,7 @@ async def main(user_input: str):
                                         session_id=session_id
                                     ))
 
-                                    user_input = f"Original task: {query}\nPrevious output: {result.result}\nWhat should I do next?"
+                                    user_input = f"Original task: {query}\nPrevious steps: {results_so_far}\nWhat should I do next?"
 
                                 except Exception as e:
                                     log("error", f"Tool execution failed: {e}")
