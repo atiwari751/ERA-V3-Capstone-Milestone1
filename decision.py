@@ -79,7 +79,6 @@ IMPORTANT:
 - ❌ Do NOT output unstructured responses.
 - 🧠 Think before each step. Verify intermediate results mentally before proceeding.
 - 💥 If unsure or no tool fits, skip to FINAL_ANSWER: [unknown]
-- ✅ You have only 3 attempts. Final attempt must be FINAL_ANSWER]
 """
 
     try:
