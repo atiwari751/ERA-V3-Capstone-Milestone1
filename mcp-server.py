@@ -237,12 +237,6 @@ def add(input: AddInput) -> AddOutput:
     print("CALLED: add(AddInput) -> AddOutput")
     return AddOutput(result=input.a + input.b)
 
-@mcp.tool()
-def sqrt(input: SqrtInput) -> SqrtOutput:
-    """Square root of a number"""
-    print("CALLED: sqrt(SqrtInput) -> SqrtOutput")
-    return SqrtOutput(result=input.a ** 0.5)
-
 # subtraction tool
 @mcp.tool()
 def subtract(a: int, b: int) -> int:
@@ -252,10 +246,10 @@ def subtract(a: int, b: int) -> int:
 
 # multiplication tool
 @mcp.tool()
-def multiply(a: int, b: int) -> int:
+def multiply(a: float, b: float) -> float:
     """Multiply two numbers"""
-    print("CALLED: multiply(a: int, b: int) -> int:")
-    return int(a * b)
+    print("CALLED: multiply(a: float, b: float) -> float:")
+    return float(a * b)
 
 #  division tool
 @mcp.tool() 
