@@ -446,6 +446,7 @@ if __name__ == "__main__":
     elif len(sys.argv) > 1 and sys.argv[1] == "dev":
         logger.info("Running in dev mode without transport")
         try:
+            initialize_services() # Initialize services like AiFormFinder
             mcp.run() # Run without transport for dev server
             logger.info("MCP server run completed normally")
         except Exception as e:
@@ -458,6 +459,13 @@ if __name__ == "__main__":
         
         def run_server():
             try:
+                initialize_services()  # Initialize services like AiFormFinder
+                logger.info("Initialized services successfully")
+                logger.info("Running MCP server with stdio transport")
+                # Run the MCP server with stdio transport
+                ensure_faiss_ready()  # Ensure FAISS index is ready before starting server
+                logger.info("FAISS index is ready, starting server...")
+                # Start the MCP server
                 mcp.run(transport="stdio")
                 logger.info("MCP server thread completed normally")
             except Exception as e:

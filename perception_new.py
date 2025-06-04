@@ -1,5 +1,6 @@
+# perception.py
 from pydantic import BaseModel
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict # Import Dict
 import os
 from dotenv import load_dotenv
 from google import genai
@@ -21,7 +22,7 @@ client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 class PerceptionResult(BaseModel):
     user_input: str
-    intent: Optional[str] = "unknown" # added default value
+    intent: Optional[str]
     entities: List[str] = []
     tool_hint: Optional[str] = None
     # New fields for structured task context
@@ -36,12 +37,13 @@ class PerceptionResult(BaseModel):
 
 
 def extract_perception(user_input: str) -> PerceptionResult:
-    """Extracts intent, entities, and tool hints using LLM"""
+    """Extracts intent, entities, tool hints, and structured task details using LLM"""
 
     prompt = f"""
-You are an AI that extracts structured facts from user input.
+You are an AI that extracts structured facts and detailed task requirements from user input.
+Analyze the following user request and provide a detailed breakdown of the task.
 
-Input: "{user_input}"
+User Input: "{user_input}"
 
 Return the response as a Python dictionary with keys:
 - intent: (brief phrase about what the user wants)
@@ -56,12 +58,12 @@ Return the response as a Python dictionary with keys:
 - comparison_metrics: (List of strings, specific metrics the user wants to compare, e.g., ["built up area", "green area", "FSI", "total steel tonnage", "embodied carbon"])
 - additional_requests: (List of strings, other specific requests like "suggest GRIHA strategies", "provide cost estimates")
 
-Output only the dictionary on a single line. Do NOT wrap it in ```json or other formatting. Ensure `entities` is a list of strings, not a dictionary.
+Output only the dictionary on a single line. Do NOT wrap it in ```json or other formatting. Ensure `entities`, `comparison_metrics`, and `additional_requests` are lists of strings.
     """
 
     try:
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.0-flash", # Consider gemini-1.5-flash for better parsing of complex structured output
             contents=prompt
         )
         raw = response.text.strip()
@@ -71,10 +73,11 @@ Output only the dictionary on a single line. Do NOT wrap it in ```json or other 
         clean = re.sub(r"^```json|```$", "", raw.strip(), flags=re.MULTILINE).strip()
 
         try:
-            parsed = eval(clean)
+            parsed = eval(clean) # Using eval for parsing Python dict string
         except Exception as e:
-            log("perception", f"⚠️ Failed to parse cleaned output: {e}")
-            raise
+            log("perception", f"⚠️ Failed to parse cleaned output: {e}. Raw: {clean}")
+            # Fallback to a basic PerceptionResult if parsing fails
+            return PerceptionResult(user_input=user_input)
 
         # Ensure lists are lists, not dicts or other types, handling common LLM quirks
         if isinstance(parsed.get("entities"), dict): parsed["entities"] = list(parsed["entities"].values())

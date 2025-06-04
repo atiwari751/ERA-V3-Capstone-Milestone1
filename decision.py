@@ -4,6 +4,7 @@ from typing import List, Optional
 from dotenv import load_dotenv
 from google import genai
 import os
+import json
 
 # Optional: import log from agent if shared, else define locally
 try:
@@ -25,16 +26,73 @@ def generate_plan(
     """Generates a plan (tool call or final answer) using LLM based on structured perception and memory."""
 
     memory_texts = "\n".join(f"- {m.text}" for m in memory_items) or "None"
-    
+
     # Extract previous math results if available
     math_results = []
     for mem in memory_items:
         if mem.tool_name in ['add', 'subtract', 'multiply', 'divide']:
             math_results.append(f"- {mem.tool_name} result: {mem.text}")
-    
+
     math_context = "\n".join(math_results) if math_results else "No previous calculations."
 
     tool_context = f"\nYou have access to the following tools:\n{tool_descriptions}" if tool_descriptions else ""
+
+    completed_schemes_count = 0
+    scheme_data_in_memory = []
+    # Parse memory items to get structured scheme data
+    for m in memory_items:
+        if "scheme_result" in m.tags and m.text.startswith("Scheme completed:"):
+            try:
+                # Assuming you've structured the 'scheme_result' memory item to contain JSON or a parsable string
+                # This is a placeholder; you'd need to ensure 'agent.py' stores this structurally.
+                # For now, let's assume the LLM can also infer from past tool outputs.
+                completed_schemes_count += 1
+                # Extract structured data if possible
+                # E.g., if memory.add(MemoryItem(text=f"Scheme completed: {json.dumps(scheme_data)}", ...))
+                # then: scheme_data_in_memory.append(json.loads(m.text.split("Scheme completed: ", 1)[1]))
+            except Exception as e:
+                log("memory_parse", f"Could not parse scheme result from memory: {m.text}, Error: {e}")
+
+    # Construct dynamic task context for the LLM
+    dynamic_task_context = f"""
+Current Task Context derived from your input:
+- Overall task: {perception.task_description or "Analyze building schemes."}
+- Location: {perception.location or "Not specified."}
+- Building Type: {perception.building_type or "Not specified."}
+- Schemes required: {perception.num_schemes_required or "Undetermined. Aim for a reasonable number (e.g., 3-5) if not specified."}
+"""
+
+    if perception.site_area_sqm:
+        dynamic_task_context += f"- Site Area: {perception.site_area_sqm} sq.m.\n"
+    if perception.fsi_limit:
+        dynamic_task_context += f"- FSI Limit: {perception.fsi_limit}.\n"
+        if perception.site_area_sqm:
+            max_built_up_area = perception.site_area_sqm * perception.fsi_limit
+            dynamic_task_context += f"  (Max Built-up Area: {max_built_up_area} sq.m)\n"
+
+    dynamic_task_context += f"- Metrics to compare: {', '.join(perception.comparison_metrics) or 'Not specified. Consider standard metrics like area, tonnage, carbon.'}\n"
+    if perception.additional_requests:
+        dynamic_task_context += f"- Additional requests: {', '.join(perception.additional_requests)}.\n"
+
+    # General instructions for generating scheme inputs (will be refined by specific constraints)
+    dynamic_task_context += """
+For each scheme, you need to:
+1. Determine valid input parameters for `run_ai_form_parser` (Extents X, Extents Y, Grid Spacing X, Grid Spacing Y, No. of floors) that are plausible for the specified site area and FSI. Aim for varied plausible building shapes and floor counts.
+**IMPORTANT: Grid Spacing X and Grid Spacing Y MUST be integers.**
+**IMPORTANT: Use ONLY the following input combinations:**
+**Extents X (m): 23, Extents Y (m): 23, Grid Spacing X (m): 6, Grid Spacing Y (m): 6, No. of floors: 3**
+**Extents X (m): 13, Extents Y (m): 31, Grid Spacing X (m): 8, Grid Spacing Y (m): 6, No. of floors: 9**
+**Extents X (m): 19, Extents Y (m): 25, Grid Spacing X (m): 5, Grid Spacing Y (m): 8, No. of floors: 9**
+**Extents X (m): 17, Extents Y (m): 24, Grid Spacing X (m): 7, Grid Spacing Y (m): 7, No. of floors: 17**
+2. Call `run_ai_form_parser` with these inputs to get 'Steel tonnage (tons/m2)' and 'Concrete tonnage (tons/m2)'.
+3. Find the embodied carbon for 'Fabricated Structural Steel' using `search_2050_products` and then `get_2050_product_details_by_slug`. The relevant value is `material_facts.manufacturing` from the 2050 API output.
+4. Calculate 'Total Steel Embodied Carbon' by multiplying 'Steel tonnage (tons/m2)' by `material_facts.manufacturing` and the total built-up area for the scheme (Extents X * Extents Y * No. of floors).
+5. Accumulate results for all schemes.
+"""
+
+    # Update progress based on dynamically parsed schemes
+    dynamic_task_context += f"\nCurrent Progress: {completed_schemes_count} out of {perception.num_schemes_required or 'N/A'} schemes processed."
+
 
     prompt = f"""
 You are a reasoning-driven AI agent with access to tools. Your job is to solve the user's request step-by-step by reasoning through the problem, selecting a tool if needed, and continuing until the FINAL_ANSWER is produced.{tool_context}
@@ -46,6 +104,7 @@ Always follow this loop:
    FUNCTION_CALL: tool_name|param1=value1|param2=value2
    For tools that take a complex input object (e.g., named 'input'), use dot notation for nested parameters:
    FUNCTION_CALL: tool_name|input.nested_param1=valueA|input.nested_param2=valueB
+   FUNCTION_CALL: run_ai_form_parser|input={json.dumps({"extents_x_m": 23, "extents_y_m": 23, "grid_spacing_x_m": 6, "grid_spacing_y_m": 6, "no_of_floors": 3})}
 3. When the final answer is known, respond using:
    FINAL_ANSWER: [your final result]
 
@@ -64,6 +123,8 @@ Input Summary:
 - Entities: {', '.join(perception.entities)}
 - Tool hint: {perception.tool_hint or 'None'}
 - Current results so far: {perception.user_input.split("Previous results:")[-1] if "Previous results:" in perception.user_input else "None"}
+
+{dynamic_task_context}
 
 IMPORTANT INSTRUCTIONS FOR MULTI-PART QUERIES:
 1. Break down the user request into distinct operations
@@ -115,7 +176,8 @@ IMPORTANT:
             if line.strip().startswith("FUNCTION_CALL:") or line.strip().startswith("FINAL_ANSWER:"):
                 return line.strip()
 
-        return raw.strip()
+        # If no explicit FUNCTION_CALL or FINAL_ANSWER, assume the raw response is the final answer
+        return f"FINAL_ANSWER: {raw.strip()}"
 
     except Exception as e:
         log("plan", f"⚠️ Decision generation failed: {e}")
