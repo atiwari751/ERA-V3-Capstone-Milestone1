@@ -15,17 +15,19 @@ from markitdown import MarkItDown
 import time
 from models import AddInput, AddOutput, SqrtInput, SqrtOutput, StringsToIntsInput, StringsToIntsOutput, ExpSumInput, ExpSumOutput
 from models import ( Search2050ProductsInput, Search2050ProductsOutput, ProductInfo,
-    Get2050ProductDetailsInput, Get2050ProductDetailsOutput, MaterialFacts )
+    Get2050ProductDetailsInput, Get2050ProductDetailsOutput, MaterialFacts, AiFormFinderInput, AiFormFinderOutput )
 from PIL import Image as PILImage
 from tqdm import tqdm
 import hashlib
 from dotenv import load_dotenv
 import logging
 import traceback
+from typing import Optional
+from ai_form_parser import AiFormFinder
 
 load_dotenv()  # This loads the variables from .env
 
-mcp = FastMCP("Calculator")
+mcp = FastMCP("MultiToolAgentServer")
 
 EMBED_URL = "http://localhost:11434/api/embeddings"
 EMBED_MODEL = "nomic-embed-text"
@@ -50,6 +52,27 @@ BASE_API_URL = "https://app.2050-materials.com/"
 TOKEN_URL = f"{BASE_API_URL}developer/api/token/getapitoken/"
 # IMPORTANT: Ensure DEVELOPER_TOKEN is set as an environment variable where mcp-server.py runs
 DEVELOPER_TOKEN = os.getenv("DEVELOPER_TOKEN")
+# --- AiFormFinder Initialization ---
+AI_FORM_SHEET_URL = os.getenv("AI_FORM_GOOGLE_SHEET_URL")
+ai_form_finder_instance: Optional[AiFormFinder] = None
+
+def initialize_services():
+    global ai_form_finder_instance
+    # Initialize AiFormFinder
+    if AI_FORM_SHEET_URL:
+        try:
+            mcp_log("info", f"Initializing AiFormFinder with URL: {AI_FORM_SHEET_URL}")
+            ai_form_finder_instance = AiFormFinder(AI_FORM_SHEET_URL)
+            if not ai_form_finder_instance.is_ready:
+                mcp_log("error", "AiFormFinder initialized but is not ready. Check sheet URL and data integrity.")
+                ai_form_finder_instance = None # Ensure it's None if not ready
+            else:
+                mcp_log("info", "AiFormFinder initialized successfully and is ready.")
+        except Exception as e:
+            mcp_log("error", f"Failed to initialize AiFormFinder: {e}")
+            ai_form_finder_instance = None
+    else:
+        mcp_log("warn", "AI_FORM_GOOGLE_SHEET_URL not set. AiFormFinder tool will not be available.")
 
 def mcp_log(level: str, message: str) -> None:
     """Log a message to stderr to avoid interfering with JSON communication"""
@@ -197,6 +220,44 @@ def get_2050_product_details_by_slug(input: Get2050ProductDetailsInput) -> Get20
         return Get2050ProductDetailsOutput(message=f"An unexpected error occurred: {e}")
 
 # --- END 2050 Materials API Integration ---
+# --- AiFormFinder Tool ---
+@mcp.tool(description="Looks up structural engineering outputs (like steel tonnage per m2) based on building geometry inputs. Uses a predefined dataset from a Google Sheet. Requires: extents_x_m, extents_y_m, grid_spacing_x_m, grid_spacing_y_m, no_of_floors.")
+def run_ai_form_parser(input: AiFormFinderInput) -> AiFormFinderOutput:
+    mcp_log("tool_call", f"run_ai_form_parser with inputs: {input.model_dump_json()}")
+    global ai_form_finder_instance
+    if not ai_form_finder_instance or not ai_form_finder_instance.is_ready:
+        mcp_log("error", "AiFormFinder tool called but not initialized or not ready.")
+        return AiFormFinderOutput(message="AiFormFinder tool is not available or not properly initialized. Check server logs and AI_FORM_GOOGLE_SHEET_URL environment variable.")
+
+    # Map Pydantic model field names to the keys expected by AiFormFinder.get_output()
+    form_input_data = {
+        'Extents X (m)': input.extents_x_m,
+        'Extents Y (m)': input.extents_y_m,
+        'Grid Spacing X (m)': input.grid_spacing_x_m,
+        'Grid Spacing Y (m)': input.grid_spacing_y_m,
+        'No. of floors': input.no_of_floors
+    }
+    mcp_log("info", f"Calling AiFormFinder with: {form_input_data}")
+    try:
+        output_dict = ai_form_finder_instance.get_output(form_input_data)
+        if output_dict:
+            mcp_log("tool_result", f"AiFormFinder returned: {output_dict}")
+            # Map AiFormFinder output keys back to Pydantic model field names
+            return AiFormFinderOutput(
+                steel_tonnage_tons_per_m2=output_dict.get('Steel tonnage (tons/m2)'),
+                column_size_mm=output_dict.get('Column size (mm)'),
+                structural_depth_mm=output_dict.get('Structural depth (mm)'),
+                concrete_tonnage_tons_per_m2=output_dict.get('Concrete tonnage (tons/m2)'),
+                trustworthiness=output_dict.get('Trustworthiness', False),
+                message="Successfully retrieved AiForm data."
+            )
+        else:
+            mcp_log("tool_result", "No matching AiForm data found for the given inputs.")
+            return AiFormFinderOutput(message="No matching AiForm data found for the given inputs.")
+    except Exception as e:
+        mcp_log("error", f"Error during AiFormFinder lookup: {e}")
+        return AiFormFinderOutput(message=f"An error occurred during AiFormFinder lookup: {str(e)}")
+# --- End AiFormFinder Tool ---
 
 def get_embedding(text: str) -> np.ndarray:
     response = requests.post(EMBED_URL, json={"model": EMBED_MODEL, "prompt": text})

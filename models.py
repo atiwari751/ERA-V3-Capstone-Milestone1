@@ -55,3 +55,21 @@ class Get2050ProductDetailsOutput(BaseModel):
     product_slug_id: Optional[str] = None
     material_facts: Optional[MaterialFacts] = None
     message: Optional[str] = None # For errors or status messages
+
+
+
+# --- AiFormFinder Models ---
+class AiFormFinderInput(BaseModel):
+    extents_x_m: int = Field(..., description="Extents X in meters for the building.")
+    extents_y_m: int = Field(..., description="Extents Y in meters for the building.")
+    grid_spacing_x_m: int = Field(..., description="Grid Spacing X in meters.")
+    grid_spacing_y_m: int = Field(..., description="Grid Spacing Y in meters.")
+    no_of_floors: int = Field(..., description="Number of floors in the building.")
+
+class AiFormFinderOutput(BaseModel):
+    steel_tonnage_tons_per_m2: Optional[float] = None
+    column_size_mm: Optional[int] = None
+    structural_depth_mm: Optional[int] = None
+    concrete_tonnage_tons_per_m2: Optional[float] = None
+    trustworthiness: Optional[bool] = None
+    message: Optional[str] = None # For errors or status messages
