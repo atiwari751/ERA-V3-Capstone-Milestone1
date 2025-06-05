@@ -78,9 +78,9 @@ FUNCTION_CALL: multiply|a=0.513|b=450.5
 
 Now I need to use the `search_documents` tool to find sustainable building materials.
 
-```tool_code
+tool_code
 FUNCTION_CALL: search_documents|query="sustainable building materials"
-```
+
 [19:37:34] [plan] Plan generated: FUNCTION_CALL: search_documents|query="sustainable building materials"
 [19:37:34] [parser] Parsed: search_documents → {'query': 'sustainable building materials'}
 [19:37:34] [tool] ⚙️ Calling 'search_documents' with: {'query': 'sustainable building materials'}

@@ -15,19 +15,19 @@ from markitdown import MarkItDown
 import time
 from models import AddInput, AddOutput, SqrtInput, SqrtOutput, StringsToIntsInput, StringsToIntsOutput, ExpSumInput, ExpSumOutput
 from models import ( Search2050ProductsInput, Search2050ProductsOutput, ProductInfo,
-    Get2050ProductDetailsInput, Get2050ProductDetailsOutput, MaterialFacts, AiFormFinderInput, AiFormFinderOutput )
+    Get2050ProductDetailsInput, Get2050ProductDetailsOutput, MaterialFacts,
+    AiFormSchemerInput, AiFormSchemerOutput )
 from PIL import Image as PILImage
 from tqdm import tqdm
 import hashlib
 from dotenv import load_dotenv
 import logging
 import traceback
-from typing import Optional
-from ai_form_parser import AiFormFinder
+from typing import Dict, Any
 
 load_dotenv()  # This loads the variables from .env
 
-mcp = FastMCP("MultiToolAgentServer")
+mcp = FastMCP("Calculator")
 
 EMBED_URL = "http://localhost:11434/api/embeddings"
 EMBED_MODEL = "nomic-embed-text"
@@ -52,27 +52,6 @@ BASE_API_URL = "https://app.2050-materials.com/"
 TOKEN_URL = f"{BASE_API_URL}developer/api/token/getapitoken/"
 # IMPORTANT: Ensure DEVELOPER_TOKEN is set as an environment variable where mcp-server.py runs
 DEVELOPER_TOKEN = os.getenv("DEVELOPER_TOKEN")
-# --- AiFormFinder Initialization ---
-AI_FORM_SHEET_URL = os.getenv("AI_FORM_GOOGLE_SHEET_URL")
-ai_form_finder_instance: Optional[AiFormFinder] = None
-
-def initialize_services():
-    global ai_form_finder_instance
-    # Initialize AiFormFinder
-    if AI_FORM_SHEET_URL:
-        try:
-            mcp_log("info", f"Initializing AiFormFinder with URL: {AI_FORM_SHEET_URL}")
-            ai_form_finder_instance = AiFormFinder(AI_FORM_SHEET_URL)
-            if not ai_form_finder_instance.is_ready:
-                mcp_log("error", "AiFormFinder initialized but is not ready. Check sheet URL and data integrity.")
-                ai_form_finder_instance = None # Ensure it's None if not ready
-            else:
-                mcp_log("info", "AiFormFinder initialized successfully and is ready.")
-        except Exception as e:
-            mcp_log("error", f"Failed to initialize AiFormFinder: {e}")
-            ai_form_finder_instance = None
-    else:
-        mcp_log("warn", "AI_FORM_GOOGLE_SHEET_URL not set. AiFormFinder tool will not be available.")
 
 def mcp_log(level: str, message: str) -> None:
     """Log a message to stderr to avoid interfering with JSON communication"""
@@ -134,7 +113,6 @@ def get_2050_api_token():
 @mcp.tool()
 def search_2050_products(input: Search2050ProductsInput) -> Search2050ProductsOutput:
     """Search for products on the 2050 Materials platform by product name."""
-    mcp_log("tool_call", f"search_2050_products with name: {input.product_name}")
     try:
         api_token = get_2050_api_token()
         headers = {
@@ -150,114 +128,51 @@ def search_2050_products(input: Search2050ProductsInput) -> Search2050ProductsOu
         
         api_products = data.get("products", data.get("results", []))
         output_products = []
-        if api_products:
-            for p in api_products:
-                output_products.append(ProductInfo(
-                    unique_product_uuid_v2=p.get("unique_product_uuid_v2"),
-                    name=p.get("name"),
-                    raw_data=p
-                ))
-            mcp_log("tool_result", f"Found {len(output_products)} product(s).")
-            return Search2050ProductsOutput(products=output_products, message=f"Found {len(output_products)} product(s).")
-        else:
-            mcp_log("tool_result", "No matching products found.")
-            return Search2050ProductsOutput(products=[], message="No matching products found.")
+        
+        for product_json in api_products:
+            parsed_product = parse_product_data(product_json)
+            output_products.append(parsed_product)
+            
+        # Enhanced message with more details if products found
+        message = "No products found."
+        if output_products:
+            product = output_products[0]
+            message = (
+                f"Found {len(output_products)} product(s). "
+                f"First product: {product.name} from {product.city}, {product.manufacturing_country}. "
+                f"Manufacturing emissions: {product.manufacturing_emissions} {product.declared_unit}"
+            )
+            
+        return Search2050ProductsOutput(
+            products=output_products,
+            message=message
+        )
 
-    except ValueError as ve: # Catch DEVELOPER_TOKEN not set
-        mcp_log("error", f"Configuration error in search_2050_products: {ve}")
-        return Search2050ProductsOutput(products=[], message=str(ve))
-    except requests.RequestException as e:
+    except Exception as e:
         mcp_log("error", f"API request failed in search_2050_products: {e}")
-        return Search2050ProductsOutput(products=[], message=f"API request failed: {e}")
-    except Exception as e:
-        mcp_log("error", f"Unexpected error in search_2050_products: {e}")
-        return Search2050ProductsOutput(products=[], message=f"An unexpected error occurred: {e}")
+        return Search2050ProductsOutput(
+            products=[],
+            message=f"Error: {str(e)}"
+        )
 
-@mcp.tool()
-def get_2050_product_details_by_slug(input: Get2050ProductDetailsInput) -> Get2050ProductDetailsOutput:
-    """Get material facts for a product from the 2050 Materials platform using its slug ID."""
-    mcp_log("tool_call", f"get_2050_product_details_by_slug with slug_id: {input.slug_id}")
+def parse_product_data(product_json: Dict[str, Any]) -> ProductInfo:
+    """Helper function to parse product JSON and extract only the essential values"""
     try:
-        api_token = get_2050_api_token()
-        headers = {
-            'Authorization': f'Bearer {api_token}',
-            'Content-Type': 'application/json',
-        }
-        url = f"{BASE_API_URL}api/get_product_slug?slug_id={input.slug_id}"
-
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-
-        if "product" in data and "material_facts" in data["product"]:
-            mf_data = data["product"]["material_facts"]
-            material_facts = MaterialFacts(
-                total_co2e_kg_mf=mf_data.get("total_co2e_kg_mf"),
-                total_biogenic_co2e=mf_data.get("total_biogenic_co2e"),
-                raw_data=mf_data
-            )
-            mcp_log("tool_result", f"Fetched details for slug: {input.slug_id}")
-            return Get2050ProductDetailsOutput(
-                product_slug_id=input.slug_id,
-                material_facts=material_facts,
-                message="Successfully fetched product details."
-            )
-        else:
-            mcp_log("warn", f"Product or material_facts not found in response for slug: {input.slug_id}")
-            return Get2050ProductDetailsOutput(product_slug_id=input.slug_id, message="Product or material_facts not found in API response.")
-
-    except ValueError as ve: # Catch DEVELOPER_TOKEN not set
-        mcp_log("error", f"Configuration error in get_2050_product_details_by_slug: {ve}")
-        return Get2050ProductDetailsOutput(message=str(ve))
-    except requests.RequestException as e:
-        mcp_log("error", f"API request failed in get_2050_product_details_by_slug: {e}")
-        return Get2050ProductDetailsOutput(message=f"API request failed: {e}")
-    except KeyError as e:
-        mcp_log("error", f"Missing expected data for slug {input.slug_id}: {e}")
-        return Get2050ProductDetailsOutput(message=f"Missing expected data in API response: {e}")
+        material_facts = product_json.get("material_facts", {})
+        
+        return ProductInfo(
+            name=product_json.get("name"),
+            material_type=product_json.get("material_type"),
+            manufacturing_country=product_json.get("manufacturing_country"),
+            city=product_json.get("city"),
+            declared_unit=material_facts.get("declared_unit"),
+            manufacturing_emissions=float(material_facts.get("manufacturing", 0))
+        )
     except Exception as e:
-        mcp_log("error", f"Unexpected error in get_2050_product_details_by_slug: {e}")
-        return Get2050ProductDetailsOutput(message=f"An unexpected error occurred: {e}")
+        mcp_log("error", f"Error parsing product data: {e}")
+        return ProductInfo()  # Return empty product info with all fields None
 
 # --- END 2050 Materials API Integration ---
-# --- AiFormFinder Tool ---
-@mcp.tool(description="Looks up structural engineering outputs (like steel tonnage per m2) based on building geometry inputs. Uses a predefined dataset from a Google Sheet. Requires: extents_x_m, extents_y_m, grid_spacing_x_m, grid_spacing_y_m, no_of_floors.")
-def run_ai_form_parser(input: AiFormFinderInput) -> AiFormFinderOutput:
-    mcp_log("tool_call", f"run_ai_form_parser with inputs: {input.model_dump_json()}")
-    global ai_form_finder_instance
-    if not ai_form_finder_instance or not ai_form_finder_instance.is_ready:
-        mcp_log("error", "AiFormFinder tool called but not initialized or not ready.")
-        return AiFormFinderOutput(message="AiFormFinder tool is not available or not properly initialized. Check server logs and AI_FORM_GOOGLE_SHEET_URL environment variable.")
-
-    # Map Pydantic model field names to the keys expected by AiFormFinder.get_output()
-    form_input_data = {
-        'Extents X (m)': input.extents_x_m,
-        'Extents Y (m)': input.extents_y_m,
-        'Grid Spacing X (m)': input.grid_spacing_x_m,
-        'Grid Spacing Y (m)': input.grid_spacing_y_m,
-        'No. of floors': input.no_of_floors
-    }
-    mcp_log("info", f"Calling AiFormFinder with: {form_input_data}")
-    try:
-        output_dict = ai_form_finder_instance.get_output(form_input_data)
-        if output_dict:
-            mcp_log("tool_result", f"AiFormFinder returned: {output_dict}")
-            # Map AiFormFinder output keys back to Pydantic model field names
-            return AiFormFinderOutput(
-                steel_tonnage_tons_per_m2=output_dict.get('Steel tonnage (tons/m2)'),
-                column_size_mm=output_dict.get('Column size (mm)'),
-                structural_depth_mm=output_dict.get('Structural depth (mm)'),
-                concrete_tonnage_tons_per_m2=output_dict.get('Concrete tonnage (tons/m2)'),
-                trustworthiness=output_dict.get('Trustworthiness', False),
-                message="Successfully retrieved AiForm data."
-            )
-        else:
-            mcp_log("tool_result", "No matching AiForm data found for the given inputs.")
-            return AiFormFinderOutput(message="No matching AiForm data found for the given inputs.")
-    except Exception as e:
-        mcp_log("error", f"Error during AiFormFinder lookup: {e}")
-        return AiFormFinderOutput(message=f"An error occurred during AiFormFinder lookup: {str(e)}")
-# --- End AiFormFinder Tool ---
 
 def get_embedding(text: str) -> np.ndarray:
     response = requests.post(EMBED_URL, json={"model": EMBED_MODEL, "prompt": text})
@@ -410,31 +325,19 @@ def ensure_faiss_ready():
     else:
         mcp_log("INFO", "Index already exists. Skipping regeneration.")
 
-# Modify the FastMCP run method to add tracing
-original_run = FastMCP.run
-def run_with_logging(self, *args, **kwargs):
-    logger.info(f"Starting MCP server with args: {args}, kwargs: {kwargs}")
-    try:
-        return original_run(self, *args, **kwargs)
-    except Exception as e:
-        logger.error(f"Error in MCP server: {e}")
-        logger.error(traceback.format_exc())
-        raise
-FastMCP.run = run_with_logging
-
-# Add logging to the embeddings function
-original_get_embedding = get_embedding
-def get_embedding_with_logging(text: str) -> np.ndarray:
-    logger.debug(f"Getting embedding for text: {text[:50]}...")
-    try:
-        result = original_get_embedding(text)
-        logger.debug(f"Successfully got embedding of shape: {result.shape}")
-        return result
-    except Exception as e:
-        logger.error(f"Error getting embedding: {e}")
-        logger.error(traceback.format_exc())
-        raise
-get_embedding = get_embedding_with_logging
+@mcp.tool()
+def ai_form_schemer(input: AiFormSchemerInput) -> AiFormSchemerOutput:
+    """Preliminary evaluation of the scheme for a building"""
+    print("CALLED: ai_form_schemer(AiFormSchemerInput) -> AiFormSchemerOutput")
+    
+    # Dummy hardcoded values for now
+    return AiFormSchemerOutput(
+        steel_tonnage=450.5,
+        column_size=400,
+        structural_depth=600,
+        concrete_tonnage=2500.75,
+        trustworthy=True
+    )
 
 if __name__ == "__main__":
     logger.info("STARTING THE SERVER")
@@ -446,7 +349,6 @@ if __name__ == "__main__":
     elif len(sys.argv) > 1 and sys.argv[1] == "dev":
         logger.info("Running in dev mode without transport")
         try:
-            initialize_services() # Initialize services like AiFormFinder
             mcp.run() # Run without transport for dev server
             logger.info("MCP server run completed normally")
         except Exception as e:
@@ -459,13 +361,6 @@ if __name__ == "__main__":
         
         def run_server():
             try:
-                initialize_services()  # Initialize services like AiFormFinder
-                logger.info("Initialized services successfully")
-                logger.info("Running MCP server with stdio transport")
-                # Run the MCP server with stdio transport
-                ensure_faiss_ready()  # Ensure FAISS index is ready before starting server
-                logger.info("FAISS index is ready, starting server...")
-                # Start the MCP server
                 mcp.run(transport="stdio")
                 logger.info("MCP server thread completed normally")
             except Exception as e:

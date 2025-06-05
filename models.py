@@ -32,10 +32,12 @@ class Search2050ProductsInput(BaseModel):
     product_name: str = Field(..., description="The name of the product to search for.")
 
 class ProductInfo(BaseModel):
-    unique_product_uuid_v2: Optional[str] = None
-    name: Optional[str] = None
-    # Add any other relevant product fields you want to consistently return
-    raw_data: Dict[str, Any] # To store the full product dictionary
+    name: Optional[str] = Field(None, description="Product name")
+    material_type: Optional[str] = Field(None, description="Type of material")
+    manufacturing_country: Optional[str] = Field(None, description="Country of manufacture")
+    city: Optional[str] = Field(None, description="City of manufacture")
+    declared_unit: Optional[str] = Field(None, description="Unit of measurement for emissions")
+    manufacturing_emissions: Optional[float] = Field(None, description="Manufacturing emissions value")
 
 class Search2050ProductsOutput(BaseModel):
     products: List[ProductInfo] = Field(default_factory=list, description="List of found products.")
@@ -56,20 +58,16 @@ class Get2050ProductDetailsOutput(BaseModel):
     material_facts: Optional[MaterialFacts] = None
     message: Optional[str] = None # For errors or status messages
 
+class AiFormSchemerInput(BaseModel):
+    extents_x: int = Field(..., description="X extent of the building")
+    extents_y: int = Field(..., description="Y extent of the building")
+    grid_spacing_x: int = Field(..., description="Grid spacing in X direction")
+    grid_spacing_y: int = Field(..., description="Grid spacing in Y direction")
+    no_of_floors: int = Field(..., description="Number of floors")
 
-
-# --- AiFormFinder Models ---
-class AiFormFinderInput(BaseModel):
-    extents_x_m: int = Field(..., description="Extents X in meters for the building.")
-    extents_y_m: int = Field(..., description="Extents Y in meters for the building.")
-    grid_spacing_x_m: int = Field(..., description="Grid Spacing X in meters.")
-    grid_spacing_y_m: int = Field(..., description="Grid Spacing Y in meters.")
-    no_of_floors: int = Field(..., description="Number of floors in the building.")
-
-class AiFormFinderOutput(BaseModel):
-    steel_tonnage_tons_per_m2: Optional[float] = None
-    column_size_mm: Optional[int] = None
-    structural_depth_mm: Optional[int] = None
-    concrete_tonnage_tons_per_m2: Optional[float] = None
-    trustworthiness: Optional[bool] = None
-    message: Optional[str] = None # For errors or status messages
+class AiFormSchemerOutput(BaseModel):
+    steel_tonnage: float = Field(..., description="Total steel tonnage")
+    column_size: int = Field(..., description="Size of columns")
+    structural_depth: int = Field(..., description="Structural depth")
+    concrete_tonnage: float = Field(..., description="Total concrete tonnage")
+    trustworthy: bool = Field(..., description="Whether the results are trustworthy")
