@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 import logging
 import traceback
 from typing import Dict, Any
+from datetime import datetime
 
 load_dotenv()  # This loads the variables from .env
 
@@ -327,17 +328,205 @@ def ensure_faiss_ready():
 
 @mcp.tool()
 def ai_form_schemer(input: AiFormSchemerInput) -> AiFormSchemerOutput:
-    """Preliminary evaluation of the scheme for a building"""
-    print("CALLED: ai_form_schemer(AiFormSchemerInput) -> AiFormSchemerOutput")
+    """Use the structural surrogate model to evaluate a building's form."""
+    try:
+        # Create input parameters array from the input model
+        input_params = [
+            input.grid_spacing_x,
+            input.grid_spacing_y,
+            input.extents_x,
+            input.extents_y,
+            input.no_of_floors
+        ]
+        
+        # Create model with config from environment variables
+        model = create_structural_surrogate_model()
+        
+        # Get prediction from the model
+        results = model.predict(input_params)
+        
+        # Extract values for the output model - strip units and convert to correct types
+        steel_tonnage_str = results["steelTonnage"]["value"]
+        steel_tonnage = float(steel_tonnage_str.split()[0])
+        
+        column_size_str = results["columnSize"]["value"]
+        column_size = int(column_size_str.split()[0])
+        
+        structural_depth_str = results["structuralDepth"]["value"]
+        structural_depth = int(structural_depth_str.split()[0])
+        
+        concrete_tonnage_str = results["concreteTonnage"]["value"]
+        concrete_tonnage = float(concrete_tonnage_str.split()[0])
+        
+        trustworthy_str = results["trustworthiness"]["value"]
+        trustworthy = trustworthy_str.startswith("True")
+        
+        mcp_log("info", f"AI Form Schema prediction completed successfully")
+        
+        return AiFormSchemerOutput(
+            steel_tonnage=steel_tonnage,
+            column_size=column_size,
+            structural_depth=structural_depth,
+            concrete_tonnage=concrete_tonnage,
+            trustworthy=trustworthy
+        )
+    except Exception as e:
+        mcp_log("error", f"AI Form Schema prediction failed: {str(e)}")
+        raise Exception(f"Prediction failed: {str(e)}")
+
+# Classes for token handling
+class Token:
+    def __init__(self, token_json):
+        self.token_type = token_json.get('token_type')
+        self.expires_in = token_json.get('expires_in')
+        self.access_token = token_json.get('access_token')
+        self.timestamp = datetime.now()
+
+    def is_expired(self):
+        elapsed = (datetime.now() - self.timestamp).total_seconds()
+        return elapsed > self.expires_in
+
+class ClientCredentials:
+    def __init__(self, client, auth):
+        self.client = client
+        self.host = auth['host']
+        self.authorize = auth['authorizePath']
+        self.token = None
+
+    def get_token_or_refresh(self):
+        if self.token is None or self.token.is_expired():
+            data = {
+                'grant_type': 'client_credentials',
+                'client_id': self.client['id'],
+                'client_secret': self.client['secret'],
+                'scope': self.client['scope']
+            }
+            url = f"{self.host}/{self.authorize}"
+            response = requests.post(url, data=data)
+            response.raise_for_status()
+            self.token = Token(response.json())
+        return self.token
+
+class StructuralSurrogateModel:
+    def __init__(self, config):
+        self.api_url = config['apiUrl']
+        self.api_endpoint = config['apiEndpoint']
+        self.client_credentials = ClientCredentials(config['clientConfig']['client'], config['clientConfig']['auth'])
+        self.confidence_level = "0.9"
+
+    def predict(self, input_params):
+        response = self.make_prediction_request(input_params)
+        if not response:
+            raise RuntimeError("Failed to get response from API")
+        return self.parse_response(response)
+
+    def make_prediction_request(self, input_data):
+        api_url = f"{self.api_url}/{self.api_endpoint}"
+        token = self.client_credentials.get_token_or_refresh()
+
+        request_data = {
+            "type": "list",
+            "inputs": {
+                "type": "torch_tensor",
+                "data": input_data,
+                "shape": [len(input_data)],
+                "dtype": "torch.float32"
+            }
+        }
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {token.access_token}"
+        }
+
+        response = requests.post(api_url, headers=headers, json=request_data)
+        response.raise_for_status()
+        return response.json()
+
+    def parse_response(self, response):
+        # Extract predictions
+        predictions_json = json.loads(response['data']['predictions'])
+        predictions = predictions_json['data'][0]['data']
+
+        # Trustworthiness defaults
+        trustworthiness = {"value": "True (75%)", "confidence": 75}
+        if 'classification_predictions' in response['data']:
+            classification_predictions = json.loads(response['data']['classification_predictions'])
+            classification_uncertainty = json.loads(response['data']['classification_uncertainty'])
+
+            is_trustworthy = classification_predictions['data'][0]['data'][0] == 1.0
+            confidence_percent = round(classification_uncertainty['data'][0]['data'][0] * 100)
+            trustworthiness = {
+                "value": f"{'True' if is_trustworthy else 'False'} ({confidence_percent}%)",
+                "confidence": confidence_percent
+            }
+
+        # Extract HDIs (highest density intervals)
+        hdis_json = json.loads(response['data']['hdis'])
+        hdis_data = hdis_json['data'][0]['data']
+
+        results = []
+        for i, value in enumerate(predictions):
+            lower = hdis_data[self.confidence_level]['data']['lower']['data'][i]
+            upper = hdis_data[self.confidence_level]['data']['upper']['data'][i]
+            rng = abs(upper - lower)
+            mean_value = abs(value)
+            uncertainty_percent = (rng / (2 * mean_value)) * 100 if mean_value > 0 else 0
+            results.append({
+                "value": value,
+                "uncertainty": min(100, uncertainty_percent)
+            })
+
+        return {
+            "steelTonnage": {
+                "value": f"{results[0]['value']*1000:.3f} kg/m²",
+                "uncertainty": results[0]['uncertainty']
+            },
+            "columnSize": {
+                "value": f"{round(results[1]['value'])} mm",
+                "uncertainty": results[1]['uncertainty']
+            },
+            "structuralDepth": {
+                "value": f"{round(results[2]['value'])} mm",
+                "uncertainty": results[2]['uncertainty']
+            },
+            "concreteTonnage": {
+                "value": f"{results[3]['value']*1000:.2f} kg/m²",
+                "uncertainty": results[3]['uncertainty']
+            },
+            "trustworthiness": trustworthiness
+        }
+
+def create_structural_surrogate_model():
+    """Create a StructuralSurrogateModel with config from environment variables"""
+    # Check required environment variables
+    required_vars = [
+        'API_URL', 'API_ENDPOINT_NAME',
+        'AZURE_CLIENT_ID', 'AZURE_CLIENT_SECRET', 'AZURE_SCOPE'
+    ]
+    missing_vars = [v for v in required_vars if not os.getenv(v)]
+    if missing_vars:
+        mcp_log("error", f"Missing environment variables: {', '.join(missing_vars)}")
+        raise ValueError(f"Missing environment variables: {', '.join(missing_vars)}")
     
-    # Dummy hardcoded values for now
-    return AiFormSchemerOutput(
-        steel_tonnage=450.5,
-        column_size=400,
-        structural_depth=600,
-        concrete_tonnage=2500.75,
-        trustworthy=True
-    )
+    # Create model with config
+    model = StructuralSurrogateModel({
+        "apiUrl": os.getenv('API_URL'),
+        "apiEndpoint": os.getenv('API_ENDPOINT_NAME'),
+        "clientConfig": {
+            "client": {
+                "id": os.getenv('AZURE_CLIENT_ID'),
+                "secret": os.getenv('AZURE_CLIENT_SECRET'),
+                "scope": os.getenv('AZURE_SCOPE'),
+            },
+            "auth": {
+                "authorizePath": "auth/token",
+                "host": os.getenv('API_URL')
+            }
+        }
+    })
+    
+    return model
 
 if __name__ == "__main__":
     logger.info("STARTING THE SERVER")

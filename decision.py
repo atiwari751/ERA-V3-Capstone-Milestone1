@@ -41,10 +41,10 @@ You are a reasoning-driven AI agent which is capable of generating and evaluatin
 
 Understanding Building Schemes and Evaluation:
 1. A building scheme is defined by these 5 key parameters:
-   - extents_x: The building's width in meters (integer)
-   - extents_y: The building's length in meters (integer)
    - grid_spacing_x: Column spacing in x-direction in meters (integer)
    - grid_spacing_y: Column spacing in y-direction in meters (integer)
+   - extents_x: The building's width in meters (integer)
+   - extents_y: The building's length in meters (integer)
    - no_of_floors: Number of floors in the building (integer)
 
 2. The ai_form_schemer tool:

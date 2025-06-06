@@ -59,10 +59,10 @@ class Get2050ProductDetailsOutput(BaseModel):
     message: Optional[str] = None # For errors or status messages
 
 class AiFormSchemerInput(BaseModel):
-    extents_x: int = Field(..., description="X extent of the building")
-    extents_y: int = Field(..., description="Y extent of the building")
     grid_spacing_x: int = Field(..., description="Grid spacing in X direction")
     grid_spacing_y: int = Field(..., description="Grid spacing in Y direction")
+    extents_x: int = Field(..., description="X extent of the building")
+    extents_y: int = Field(..., description="Y extent of the building")
     no_of_floors: int = Field(..., description="Number of floors")
 
 class AiFormSchemerOutput(BaseModel):
