@@ -114,6 +114,20 @@ async def main(user_input: str):
                                                 tags=["search_summary"],
                                                 session_id=session_id
                                             ))
+                                    elif result.tool_name == 'ai_form_schemer':
+                                        # Handle the ai_form_schemer tool result
+                                        form_key = str(result.arguments).replace(" ", "_")[:30]
+                                        results_so_far[f"form_schema_{form_key}"] = f"Created form schema for: {result.arguments}"
+                                        
+                                        # Add explicit memory about this form schema creation
+                                        memory.add(MemoryItem(
+                                            text=f"FORM SCHEMA: Created schema for {result.arguments} with result: {result.result}",
+                                            type="form_schema",
+                                            tool_name="ai_form_schemer",
+                                            user_query=user_input,
+                                            tags=["form_schema", "ai_form_schemer"],
+                                            session_id=session_id
+                                        ))
                                     elif result.tool_name.startswith('search_') or result.tool_name.startswith('get_'):
                                         # For all other search/retrieval tools, track what was retrieved
                                         param_key = str(result.arguments).replace(" ", "_")[:30]
