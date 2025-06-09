@@ -1,20 +1,13 @@
-from perception import PerceptionResult
-from memory import MemoryItem
+from module.perception import PerceptionResult
+from module.memory import MemoryItem
 from typing import List, Optional
 from dotenv import load_dotenv
 from google import genai
 import os
-
-# Optional: import log from agent if shared, else define locally
-try:
-    from agent import log
-except ImportError:
-    import datetime
-    def log(stage: str, msg: str):
-        now = datetime.datetime.now().strftime("%H:%M:%S")
-        print(f"[{now}] [{stage}] {msg}")
+from module.utils import log
 
 load_dotenv()
+# Initialize the GenAI client with the API key from environment variables
 client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
 
 def generate_plan(

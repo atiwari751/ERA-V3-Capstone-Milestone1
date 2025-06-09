@@ -4,15 +4,7 @@ import os
 from dotenv import load_dotenv
 from google import genai
 import re
-
-# Optional: import log from agent if shared, else define locally
-try:
-    from agent import log
-except ImportError:
-    import datetime
-    def log(stage: str, msg: str):
-        now = datetime.datetime.now().strftime("%H:%M:%S")
-        print(f"[{now}] [{stage}] {msg}")
+from module.utils import log  # Import the log function from utils.py
 
 load_dotenv()
 

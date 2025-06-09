@@ -2,15 +2,7 @@ from typing import Dict, Any, Union
 from pydantic import BaseModel
 from mcp import ClientSession
 import ast
-
-# Optional: import log from agent if shared, else define locally
-try:
-    from agent import log
-except ImportError:
-    import datetime
-    def log(stage: str, msg: str):
-        now = datetime.datetime.now().strftime("%H:%M:%S")
-        print(f"[{now}] [{stage}] {msg}")
+from module.utils import log
 
 
 class ToolCallResult(BaseModel):
